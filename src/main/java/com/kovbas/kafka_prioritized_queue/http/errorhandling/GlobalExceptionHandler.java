@@ -1,4 +1,4 @@
-package com.kovbas.kafka_prioritized_queue.errorhandling;
+package com.kovbas.kafka_prioritized_queue.http.errorhandling;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ControllerAdvice;

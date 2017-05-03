@@ -1,4 +1,4 @@
-package com.kovbas.kafka_prioritized_queue.errorhandling;
+package com.kovbas.kafka_prioritized_queue.http.errorhandling;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;

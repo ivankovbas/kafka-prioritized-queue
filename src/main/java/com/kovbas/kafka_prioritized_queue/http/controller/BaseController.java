@@ -6,7 +6,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 
 @RestController
-public class CompanyController {
+public class BaseController {
 
 
     @RequestMapping(value="/", method=RequestMethod.GET)
