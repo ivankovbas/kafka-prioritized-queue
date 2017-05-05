@@ -22,6 +22,15 @@ public class ProducerTask implements ApplicationRunner {
     private Properties props;
 
 
+    /**
+     * Method sends
+     * 100 messages to high priority topic,
+     * 200 messages to next priority topic
+     * and so on...
+     *
+     * @param applicationArguments Application Arguments
+     * @throws Exception
+     */
     @Override
     @Async
     public void run(ApplicationArguments applicationArguments) throws Exception {
