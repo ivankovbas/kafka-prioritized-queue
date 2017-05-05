@@ -22,18 +22,26 @@ public class ProducerTask implements ApplicationRunner {
     private Properties props;
 
 
+    /**
+     * Method sends
+     * 100 messages to high priority topic,
+     * 200 messages to next priority topic
+     * and so on...
+     *
+     * @param applicationArguments Application Arguments
+     * @throws Exception
+     */
     @Override
     @Async
     public void run(ApplicationArguments applicationArguments) throws Exception {
 
-        Producer<String, String> producer = new KafkaProducer<>(props);
-
         List<String> topics = new ArrayList<>(this.topics);
 
-        int i = 0;
+        try (
+                Producer<String, String> producer = new KafkaProducer<>(props)
+        ) {
 
-
-        try {
+            int i = 0;
 
             while ( !topics.isEmpty() ) {
 
@@ -59,10 +67,6 @@ public class ProducerTask implements ApplicationRunner {
                 }
 
             }
-
-        } finally {
-
-            producer.close();
 
         }
 
