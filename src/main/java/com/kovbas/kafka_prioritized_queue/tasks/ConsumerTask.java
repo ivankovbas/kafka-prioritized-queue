@@ -1,6 +1,5 @@
 package com.kovbas.kafka_prioritized_queue.tasks;
 
-import com.sun.tools.javac.util.Assert;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -11,6 +10,10 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 
 @Component
@@ -24,37 +27,65 @@ public class ConsumerTask implements ApplicationRunner {
 
     private final List<KafkaConsumer<String, String>> consumers = new ArrayList<>();
 
+    private final List<Future<Pair<String, ConsumerRecords<String, String>>>> futures = new ArrayList<>();
+
+    private final Map<String, Callable<Pair<String, ConsumerRecords<String, String>>>> topicsCallables = new HashMap<>();
+
 
     @Override
     @Async
     public void run(ApplicationArguments applicationArguments) throws Exception {
 
-        // Initialize consumers
+        ExecutorService executor;
+
+        // Initialize consumers, threads and so on
         {
+
+            executor = Executors.newFixedThreadPool(consumersProperties.size());
+
             for (int i = 0; i < consumersProperties.size(); i++) {
 
+                final String topic = topics.get(i);
+
                 KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumersProperties.get(i));
-                consumer.subscribe(Collections.singletonList(topics.get(i)));
+                consumer.subscribe(Collections.singletonList(topic));
 
                 consumers.add(consumer);
 
+                Callable<Pair<String, ConsumerRecords<String, String>>> callable = () -> {
+                    return new Pair<>(topic, consumer.poll(Long.MAX_VALUE));
+                };
+
+                futures.add(executor.submit(callable));
+                topicsCallables.put(topics.get(i), callable);
+
             }
         }
+
 
         try {
 
             while (true) {
 
-                for (KafkaConsumer<String, String> consumer : consumers) {
+                Thread.sleep(10);
 
-                    ConsumerRecords<String, String> records = consumer.poll(0L);
+                for (ListIterator<Future<Pair<String, ConsumerRecords<String, String>>>> i = futures.listIterator();
+                        i.hasNext(); ) {
 
+                    final Future<Pair<String, ConsumerRecords<String, String>>> future = i.next();
 
-                    if (!records.isEmpty()) {
+                    if (future.isDone()) {
 
-                        records.forEach(this::handleRecord);
+                        Pair<String, ConsumerRecords<String, String>> pair = future.get();
 
-                        break;
+                        i.set(executor.submit(topicsCallables.get(pair.getFirst())));
+
+                        if (!pair.getSecond().isEmpty()) {
+
+                            pair.getSecond().forEach(this::handleRecord);
+
+                            break;
+                        }
                     }
                 }
 
@@ -77,5 +108,32 @@ public class ConsumerTask implements ApplicationRunner {
                 record.offset(),
                 record.value()
         );
+    }
+}
+
+class Pair<F, S> {
+
+    private F first;
+    private S second;
+
+    public Pair(F first, S second) {
+        this.first = first;
+        this.second = second;
+    }
+
+    public void setFirst(F first) {
+        this.first = first;
+    }
+
+    public void setSecond(S second) {
+        this.second = second;
+    }
+
+    public F getFirst() {
+        return first;
+    }
+
+    public S getSecond() {
+        return second;
     }
 }
