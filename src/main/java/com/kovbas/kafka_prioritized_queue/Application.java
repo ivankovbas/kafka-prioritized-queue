@@ -1,18 +1,15 @@
 package com.kovbas.kafka_prioritized_queue;
 
-import java.util.concurrent.Executor;
-
+import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
-import org.springframework.web.servlet.config.annotation.EnableWebMvc;
 import org.springframework.scheduling.annotation.AsyncConfigurerSupport;
 import org.springframework.scheduling.annotation.EnableAsync;
 
+
 @SpringBootApplication
-@EnableWebMvc
 @EnableAsync
-public class Application extends AsyncConfigurerSupport {
+public class Application extends AsyncConfigurerSupport implements CommandLineRunner {
 
     public static void main(String[] args) {
 
@@ -21,8 +18,7 @@ public class Application extends AsyncConfigurerSupport {
     }
 
     @Override
-    public Executor getAsyncExecutor() {
-        return new SimpleAsyncTaskExecutor();
-    }
+    public void run(String... strings) throws Exception {
 
+    }
 }
