@@ -1,6 +1,5 @@
 package com.kovbas.kafka_prioritized_queue.tasks;
 
-import com.sun.tools.javac.util.Assert;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
