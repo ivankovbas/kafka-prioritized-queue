@@ -29,6 +29,9 @@ public class ConsumerTask implements ApplicationRunner {
 
     private final List<Future<Pair<String, ConsumerRecords<String, String>>>> futures = new ArrayList<>();
 
+    /**
+     * The map saves relations between topics and Callable instances that poll new data for the given topic
+     */
     private final Map<String, Callable<Pair<String, ConsumerRecords<String, String>>>> topicsCallables = new HashMap<>();
 
 
@@ -36,29 +39,41 @@ public class ConsumerTask implements ApplicationRunner {
     @Async
     public void run(ApplicationArguments applicationArguments) throws Exception {
 
+        // Assert that number of topics is equals to number of consumers
+        // as we will create separate consumer for each topic
+        assert topics.size() == consumersProperties.size();
+
         ExecutorService executor;
 
         // Initialize consumers, threads and so on
         {
 
-            executor = Executors.newFixedThreadPool(consumersProperties.size());
+            // Create new executor with thread pool size equals number of topics
+            // because each topic will be read in separate thread
+            executor = Executors.newFixedThreadPool(topics.size());
 
-            for (int i = 0; i < consumersProperties.size(); i++) {
 
-                final String topic = topics.get(i);
+            for (int i = 0; i < topics.size(); i++) {
 
-                KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumersProperties.get(i));
+                final String topic      = topics.get(i);
+                final Properties props  = consumersProperties.get(i);
+
+                // Initialize consumer and subscribe it to specific topic
+                KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
                 consumer.subscribe(Collections.singletonList(topic));
 
+                // Add consumer to consumers list
                 consumers.add(consumer);
 
-                Callable<Pair<String, ConsumerRecords<String, String>>> callable = () -> {
-                    return new Pair<>(topic, consumer.poll(Long.MAX_VALUE));
-                };
+                // Create callable instance for the given consumer to poll data from it
+                Callable<Pair<String, ConsumerRecords<String, String>>> callable = () ->
+                    new Pair<>(topic, consumer.poll(Long.MAX_VALUE));
 
+                // Save relation between topic and callable instance that poll data from the topic
+                topicsCallables.put(topic, callable);
+
+                // Collect Future objects to have ability to iterate through them
                 futures.add(executor.submit(callable));
-                topicsCallables.put(topics.get(i), callable);
-
             }
         }
 
@@ -67,8 +82,9 @@ public class ConsumerTask implements ApplicationRunner {
 
             while (true) {
 
-                Thread.sleep(10);
+                Thread.sleep(10); // only for testing purposes
 
+                // Iterate through futures list
                 for (ListIterator<Future<Pair<String, ConsumerRecords<String, String>>>> i = futures.listIterator();
                         i.hasNext(); ) {
 
@@ -76,14 +92,17 @@ public class ConsumerTask implements ApplicationRunner {
 
                     if (future.isDone()) {
 
-                        Pair<String, ConsumerRecords<String, String>> pair = future.get();
+                        final String topic                              = future.get().getFirst();
+                        final ConsumerRecords<String, String> records   = future.get().getSecond();
 
-                        i.set(executor.submit(topicsCallables.get(pair.getFirst())));
+                        // Pass callable to execution again and replace future object with new one
+                        i.set(executor.submit(topicsCallables.get(topic)));
 
-                        if (!pair.getSecond().isEmpty()) {
+                        if (!records.isEmpty()) {
 
-                            pair.getSecond().forEach(this::handleRecord);
+                            records.forEach(this::handleRecord);
 
+                            // if records was received we should check queue form the beginning
                             break;
                         }
                     }
@@ -111,29 +130,28 @@ public class ConsumerTask implements ApplicationRunner {
     }
 }
 
+
+/**
+ * Simple class for wrapping two elements
+ *
+ * @param <F> Type of first element in pair
+ * @param <S> Type of second element in pair
+ */
 class Pair<F, S> {
 
     private F first;
     private S second;
 
-    public Pair(F first, S second) {
+    Pair(F first, S second) {
         this.first = first;
         this.second = second;
     }
 
-    public void setFirst(F first) {
-        this.first = first;
-    }
-
-    public void setSecond(S second) {
-        this.second = second;
-    }
-
-    public F getFirst() {
+    F getFirst() {
         return first;
     }
 
-    public S getSecond() {
+    S getSecond() {
         return second;
     }
 }
