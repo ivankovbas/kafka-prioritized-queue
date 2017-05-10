@@ -58,11 +58,15 @@ public class ConsumerTask implements ApplicationRunner {
 
             for (ConsumerThread thread : consumerThreads) {
 
-                ConsumerRecords<String, String> records = thread.getConsumerRecordsAndReset();
+                ConsumerRecords<String, String> records = thread.getConsumerRecords();
 
                 if (records != null && !records.isEmpty()) {
+
                     records.forEach(this::handleRecord);
-                    break;
+
+                    thread.reset(); // tell to thread that data is handled
+
+                    break; // read queue from the beginning if data is received to support priority
                 }
             }
 
@@ -103,35 +107,16 @@ class ConsumerThread extends Thread {
     }
 
 
-    private void pauseConsumer() {
-
-        consumer.pause(consumer.assignment());
-    }
-
-
-    private void resumeConsumer() {
-
-        consumer.resume(consumer.paused());
-    }
-
-
     /**
-     * Method returns consumer records and remove records from the object
-     * This method is synchronized so it can be used from other threads
-     * TODO: Change ugly method name
-     *
-     * @return consumer records
+     * Sets consumerRecords to null, it allows to commit and load new data
      */
-    synchronized ConsumerRecords<String, String> getConsumerRecordsAndReset() {
-
-        ConsumerRecords<String, String> records = consumerRecords;
+    synchronized void reset() {
 
         consumerRecords = null;
-
-        return records;
     }
 
-    synchronized private ConsumerRecords<String, String> getConsumerRecords() {
+
+    synchronized ConsumerRecords<String, String> getConsumerRecords() {
 
         return consumerRecords;
     }
@@ -148,7 +133,7 @@ class ConsumerThread extends Thread {
 
         try {
 
-            long start;
+            long lastPollTime = 0;
             long pollInterval = Long.parseLong(consumerProperties.getProperty("max.poll.interval.ms")) / 2;
 
             while (true) {
@@ -158,27 +143,34 @@ class ConsumerThread extends Thread {
                 while (getConsumerRecords() == null) {
 
                     ConsumerRecords<String, String> records = consumer.poll(Long.MAX_VALUE);
+                    lastPollTime = System.currentTimeMillis();
 
                     if (!records.isEmpty()) {
+
                         setConsumerRecords(records);
-                        pauseConsumer();
+
+                        consumer.pause(consumer.assignment());
                     }
                 }
 
-                start = System.currentTimeMillis();
 
-                // wait until data is passed to main thread
+                // wait until data is handled by main thread
+                // we need it to retain consumer assigned to the partitions
                 while (getConsumerRecords() != null) {
 
-                    if (System.currentTimeMillis() - start > pollInterval) {
+                    if (System.currentTimeMillis() - lastPollTime > pollInterval) {
                         consumer.poll(0L);
-                        start = System.currentTimeMillis();
+                        lastPollTime = System.currentTimeMillis();
                     }
-
-//                    Thread.sleep(10L);
                 }
 
-                resumeConsumer();
+                // this part will be running only after data was handled
+                // by colling reset method by main thread
+                {
+                    consumer.resume(consumer.paused());
+
+                    consumer.commitSync();
+                }
             }
 
         } catch (Exception e) {
