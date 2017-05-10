@@ -1,5 +1,6 @@
 package com.kovbas.kafka_prioritized_queue.tasks;
 
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -10,10 +11,6 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 
 @Component
@@ -25,14 +22,7 @@ public class ConsumerTask implements ApplicationRunner {
     @Value("#{${kafka_consumers_properties}}")
     private List<Properties> consumersProperties;
 
-    private final List<KafkaConsumer<String, String>> consumers = new ArrayList<>();
-
-    private final List<Future<Pair<String, ConsumerRecords<String, String>>>> futures = new ArrayList<>();
-
-    /**
-     * The map saves relations between topics and Callable instances that poll new data for the given topic
-     */
-    private final Map<String, Callable<Pair<String, ConsumerRecords<String, String>>>> topicsCallables = new HashMap<>();
+    private final List<ConsumerThread> consumerThreads = new ArrayList<>();
 
 
     @Override
@@ -43,76 +33,38 @@ public class ConsumerTask implements ApplicationRunner {
         // as we will create separate consumer for each topic
         assert topics.size() == consumersProperties.size();
 
-        ExecutorService executor;
-
-        // Initialize consumers, threads and so on
+        // Initialize and start threads
         {
-
-            // Create new executor with thread pool size equals number of topics
-            // because each topic will be read in separate thread
-            executor = Executors.newFixedThreadPool(topics.size());
-
 
             for (int i = 0; i < topics.size(); i++) {
 
-                final String topic      = topics.get(i);
-                final Properties props  = consumersProperties.get(i);
+                ConsumerThread consumerThread = new ConsumerThread(
+                        topics.get(i),
+                        consumersProperties.get(i)
+                );
 
-                // Initialize consumer and subscribe it to specific topic
-                KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props);
-                consumer.subscribe(Collections.singletonList(topic));
+                consumerThread.start();
 
-                // Add consumer to consumers list
-                consumers.add(consumer);
-
-                // Create callable instance for the given consumer to poll data from it
-                Callable<Pair<String, ConsumerRecords<String, String>>> callable = () ->
-                    new Pair<>(topic, consumer.poll(Long.MAX_VALUE));
-
-                // Save relation between topic and callable instance that poll data from the topic
-                topicsCallables.put(topic, callable);
-
-                // Collect Future objects to have ability to iterate through them
-                futures.add(executor.submit(callable));
+                // thread order represents priority
+                consumerThreads.add(consumerThread);
             }
         }
 
 
-        try {
 
-            while (true) {
+        while (true) {
 
-                Thread.sleep(10); // only for testing purposes
+            Thread.sleep(10); // only for testing purposes
 
-                // Iterate through futures list
-                for (ListIterator<Future<Pair<String, ConsumerRecords<String, String>>>> i = futures.listIterator();
-                        i.hasNext(); ) {
+            for (ConsumerThread thread : consumerThreads) {
 
-                    final Future<Pair<String, ConsumerRecords<String, String>>> future = i.next();
+                ConsumerRecords<String, String> records = thread.getConsumerRecordsAndReset();
 
-                    if (future.isDone()) {
-
-                        final String topic                              = future.get().getFirst();
-                        final ConsumerRecords<String, String> records   = future.get().getSecond();
-
-                        // Pass callable to execution again and replace future object with new one
-                        i.set(executor.submit(topicsCallables.get(topic)));
-
-                        if (!records.isEmpty()) {
-
-                            records.forEach(this::handleRecord);
-
-                            // if records was received we should check queue form the beginning
-                            break;
-                        }
-                    }
+                if (records != null && !records.isEmpty()) {
+                    records.forEach(this::handleRecord);
+                    break;
                 }
-
             }
-
-        } finally {
-
-            consumers.forEach(KafkaConsumer::close);
 
         }
 
@@ -130,28 +82,113 @@ public class ConsumerTask implements ApplicationRunner {
     }
 }
 
+class ConsumerThread extends Thread {
 
-/**
- * Simple class for wrapping two elements
- *
- * @param <F> Type of first element in pair
- * @param <S> Type of second element in pair
- */
-class Pair<F, S> {
+    private final String topic;
 
-    private F first;
-    private S second;
+    private final Properties consumerProperties;
 
-    Pair(F first, S second) {
-        this.first = first;
-        this.second = second;
+    private final Consumer<String, String> consumer;
+
+    private ConsumerRecords<String, String> consumerRecords;
+
+
+    ConsumerThread (String topic, Properties consumerProperties) {
+
+        this.topic              = topic;
+        this.consumerProperties = consumerProperties;
+        this.consumer           = new KafkaConsumer<>(consumerProperties);
+
+        consumer.subscribe(Collections.singletonList(topic));
     }
 
-    F getFirst() {
-        return first;
+
+    private void pauseConsumer() {
+
+        consumer.pause(consumer.assignment());
     }
 
-    S getSecond() {
-        return second;
+
+    private void resumeConsumer() {
+
+        consumer.resume(consumer.paused());
     }
+
+
+    /**
+     * Method returns consumer records and remove records from the object
+     * This method is synchronized so it can be used from other threads
+     * TODO: Change ugly method name
+     *
+     * @return consumer records
+     */
+    synchronized ConsumerRecords<String, String> getConsumerRecordsAndReset() {
+
+        ConsumerRecords<String, String> records = consumerRecords;
+
+        consumerRecords = null;
+
+        return records;
+    }
+
+    synchronized private ConsumerRecords<String, String> getConsumerRecords() {
+
+        return consumerRecords;
+    }
+
+
+    synchronized private void setConsumerRecords(ConsumerRecords<String, String> records) {
+
+        consumerRecords = records;
+    }
+
+
+    @Override
+    public void run() {
+
+        try {
+
+            long start;
+            long pollInterval = Long.parseLong(consumerProperties.getProperty("max.poll.interval.ms")) / 2;
+
+            while (true) {
+
+
+                // Get data from server
+                while (getConsumerRecords() == null) {
+
+                    ConsumerRecords<String, String> records = consumer.poll(Long.MAX_VALUE);
+
+                    if (!records.isEmpty()) {
+                        setConsumerRecords(records);
+                        pauseConsumer();
+                    }
+                }
+
+                start = System.currentTimeMillis();
+
+                // wait until data is passed to main thread
+                while (getConsumerRecords() != null) {
+
+                    if (System.currentTimeMillis() - start > pollInterval) {
+                        consumer.poll(0L);
+                        start = System.currentTimeMillis();
+                    }
+
+//                    Thread.sleep(10L);
+                }
+
+                resumeConsumer();
+            }
+
+        } catch (Exception e) {
+
+            e.printStackTrace();
+        } finally {
+
+            consumer.close();
+        }
+
+    }
+
 }
