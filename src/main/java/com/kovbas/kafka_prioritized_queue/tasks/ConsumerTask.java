@@ -2,6 +2,7 @@ package com.kovbas.kafka_prioritized_queue.tasks;
 
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,28 +31,34 @@ public class ConsumerTask implements ApplicationRunner {
     @Async
     public void run(ApplicationArguments applicationArguments) throws Exception {
 
-        Thread.sleep(1000);
-
         consumer = new KafkaConsumer<>(consumerProperties);
 
         try {
 
             consumer.subscribe(topics);
 
+            forcePartitionsAssignment();
+
             while (true) {
 
                 // Find highest priority topic with available messages
                 String topic = findTopicToRead();
 
-                // If there isn't topic with unpolled messages then pause
-                // all topics and call poll to not cause session timeout
-                if (topic != null) {
-                    pauseTopicsExcept(topic);
-                } else {
-                    pauseAllTopics();
-                }
 
-                consumer.poll(1000L).forEach(this::handleRecord);
+                if (topic != null) {
+
+                    // poll data from specific topic and handle messages
+                    pauseTopicsExcept(topic);
+                    consumer.poll(0L).forEach(this::handleRecord);
+
+                } else {
+
+                    // If there isn't topic with unpolled messages then pause
+                    // all topics and call poll to not cause session timeout
+                    pauseAllTopics();
+                    consumer.poll(1000L);
+
+                }
 
                 resumeAllTopics();
             }
@@ -60,6 +67,29 @@ public class ConsumerTask implements ApplicationRunner {
             consumer.close();
         }
 
+    }
+
+
+    /**
+     * Force partition assignment without changing current offsets
+     */
+    private void forcePartitionsAssignment() {
+
+        // Call poll to force partition assignment
+        ConsumerRecords<String, String> data = consumer.poll(0L);
+
+        // Reset current offset to previous position
+        data.partitions().forEach(partition ->
+
+                data.records(partition).stream()
+
+                        .findFirst().ifPresent(record -> {
+
+                            consumer.seek(partition, record.offset());
+
+                        }
+                )
+        );
     }
 
 
