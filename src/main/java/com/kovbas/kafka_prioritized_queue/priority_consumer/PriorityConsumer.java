@@ -44,7 +44,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
 
         ConsumerRecords<K, V> resultRecords = ConsumerRecords.empty();
 
-        if (consumer.assignment().isEmpty()) {
+        if (assignment().isEmpty()) {
             forcePartitionsAssignment();
         }
 
@@ -58,14 +58,14 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
 
                 // poll data from specific topic and handle messages
                 pauseTopicsExcept(topic);
-                resultRecords = consumer.poll(0L);
+                resultRecords = super.poll(0L);
 
             } else {
 
                 // If there isn't topic with unpolled messages then pause
                 // all topics and call poll to not cause session timeout
                 pauseAllTopics();
-                consumer.poll(1000L); // TODO: allow to set this value from outside
+                super.poll(1000L); // TODO: allow to set this value from outside
             }
 
             resumeAllTopics();
@@ -89,7 +89,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
     private void forcePartitionsAssignment() {
 
         // Call poll to force partition assignment
-        ConsumerRecords<K, V> data = consumer.poll(0L);
+        ConsumerRecords<K, V> data = super.poll(0L);
 
         // Reset current offset to previous position
         data.partitions().forEach(partition ->
@@ -98,7 +98,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
 
                         .findFirst().ifPresent(record -> {
 
-                            consumer.seek(partition, record.offset());
+                            seek(partition, record.offset());
 
                         }
                 )
@@ -110,7 +110,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      * Pause partitions of all topics
      */
     private void pauseAllTopics() {
-        consumer.pause(consumer.assignment());
+        pause(assignment());
     }
 
 
@@ -121,11 +121,11 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      */
     private void pauseTopicsExcept(String topic) {
 
-        Set<TopicPartition> topicPartitions = consumer.assignment().stream()
+        Set<TopicPartition> topicPartitions = assignment().stream()
                 .filter(topicPartition -> !topicPartition.topic().equals(topic))
                 .collect(Collectors.toSet());
 
-        consumer.pause(topicPartitions);
+        pause(topicPartitions);
     }
 
 
@@ -134,7 +134,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      */
     private void resumeAllTopics() {
 
-        consumer.resume(consumer.paused());
+        resume(paused());
     }
 
 
@@ -149,7 +149,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
         Map<String, List<TopicPartition>> partitionsByTopic = getPartitionsByTopicMap();
 
         // Get end offsets of all partitions from the server
-        Map<TopicPartition, Long> endOffsets = consumer.endOffsets(consumer.assignment());
+        Map<TopicPartition, Long> endOffsets = endOffsets(assignment());
 
         if (partitionsByTopic.isEmpty() || endOffsets.isEmpty()) {
             return null;
@@ -160,7 +160,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
 
             for (TopicPartition partition : partitionsByTopic.get(topic)) {
 
-                if (consumer.position(partition) < endOffsets.get(partition)) {
+                if (position(partition) < endOffsets.get(partition)) {
 
                     return topic;
                 }
@@ -179,7 +179,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      */
     private Map<String, List<TopicPartition>> getPartitionsByTopicMap() {
 
-        return consumer.assignment().stream()
+        return assignment().stream()
                 .collect(Collectors.groupingBy(TopicPartition::topic));
     }
 
