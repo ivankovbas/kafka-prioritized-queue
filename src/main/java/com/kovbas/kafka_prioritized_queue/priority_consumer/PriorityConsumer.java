@@ -32,7 +32,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
 
         this.topics = topics;
 
-        consumer.subscribe(topics);
+        subscribe(topics);
     }
 
 
@@ -88,10 +88,10 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      * @param topic The name of topic to poll data from
      * @return New messages from the given topic
      */
-    protected ConsumerRecords<K, V> pollFromTopic(String topic) {
+    ConsumerRecords<K, V> pollFromTopic(String topic) {
 
         pauseTopicsExcept(topic);
-        ConsumerRecords<K, V> resultRecords = super.poll(0L);
+        ConsumerRecords<K, V> resultRecords = doPollFromConsumer(0L);
         resumeAllTopics();
 
         return resultRecords;
@@ -102,10 +102,10 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      * Method pauses all partitions and calls poll to retain connection live,
      * after that all partitions will be resumed
      */
-    protected void idlePoll() {
+    void idlePoll() {
 
         pauseAllTopics();
-        super.poll(1000L); // TODO: allow to set this value from outside
+        doPollFromConsumer(1000L); // TODO: allow to set this value from outside
         resumeAllTopics();
     }
 
@@ -113,10 +113,11 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
     /**
      * Force partition assignment without changing current offsets
      */
-    private void forcePartitionsAssignment() {
+    void forcePartitionsAssignment() {
 
         // Call poll to force partition assignment
-        ConsumerRecords<K, V> data = super.poll(0L);
+        ConsumerRecords<K, V> data = doPollFromConsumer(0L);
+
 
         // Reset current offset to previous position
         data.partitions().forEach(partition ->
@@ -136,7 +137,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
     /**
      * Pause partitions of all topics
      */
-    private void pauseAllTopics() {
+    void pauseAllTopics() {
         pause(assignment());
     }
 
@@ -146,7 +147,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      *
      * @param topic
      */
-    private void pauseTopicsExcept(String topic) {
+    void pauseTopicsExcept(String topic) {
 
         Set<TopicPartition> topicPartitions = assignment().stream()
                 .filter(topicPartition -> !topicPartition.topic().equals(topic))
@@ -159,7 +160,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
     /**
      * Resume partitions of all topics
      */
-    private void resumeAllTopics() {
+    void resumeAllTopics() {
 
         resume(paused());
     }
@@ -170,7 +171,7 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      *
      * @return
      */
-    private String findTopicToRead() {
+    String findTopicToRead() {
 
         // Map topic partitions to topics
         Map<String, List<TopicPartition>> partitionsByTopic = getPartitionsByTopicMap();
@@ -204,10 +205,21 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
      *
      * @return
      */
-    private Map<String, List<TopicPartition>> getPartitionsByTopicMap() {
+    Map<String, List<TopicPartition>> getPartitionsByTopicMap() {
 
         return assignment().stream()
                 .collect(Collectors.groupingBy(TopicPartition::topic));
     }
 
+
+    /**
+     * Polls data from the origin Consumer instance
+     *
+     * @param timeout
+     * @return
+     */
+    ConsumerRecords<K, V> doPollFromConsumer(long timeout) {
+
+        return consumer.poll(timeout);
+    }
 }

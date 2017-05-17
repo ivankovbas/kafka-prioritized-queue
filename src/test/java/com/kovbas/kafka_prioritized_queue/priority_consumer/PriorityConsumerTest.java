@@ -1,192 +1,235 @@
 package com.kovbas.kafka_prioritized_queue.priority_consumer;
 
-import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.common.TopicPartition;
+import org.junit.Before;
 import org.junit.Test;
-import org.mockito.ArgumentMatchers;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
-
+import static org.junit.Assert.assertEquals;
 import static org.mockito.Mockito.*;
-import static org.junit.Assert.*;
 
 
 public class PriorityConsumerTest {
 
-    PriorityConsumer<String, String> priorityConsumer;
+    Consumer<String, String> consumer;
+
+    PriorityConsumer<String, String> spyPriorityConsumer;
 
     List<String> topics = new ArrayList<>(Arrays.asList(
             "topic_1",
             "topic_2"
     ));
 
-    // Will be used as cache by getConsumerRecordsForTopic method
-    Map<String, ConsumerRecords<String, String>> consumerRecordsByTopics = new HashMap<>();
-
-    Map<TopicPartition, List<ConsumerRecord<String, String>>> consumerRecordsByPartition = new HashMap<>();
+    Map<TopicPartition, List<ConsumerRecord<String, String>>> recordsByPartition = new HashMap<>();
 
     {
-        consumerRecordsByPartition.put(
-
+        recordsByPartition.put(
                 new TopicPartition(topics.get(0), 0),
-
                 Arrays.asList(
-                        new ConsumerRecord<>(topics.get(0), 0, 1L, "key1", "value1")
+                        new ConsumerRecord<>(topics.get(0), 0, 29L, "key1", "value1"),
+                        new ConsumerRecord<>(topics.get(0), 0, 30L, "key2", "value2")
                 )
         );
-
-        consumerRecordsByPartition.put(
-
+        recordsByPartition.put(
+                new TopicPartition(topics.get(0), 1),
+                Arrays.asList(
+                        new ConsumerRecord<>(topics.get(0), 1, 20L, "key1", "value1")
+                )
+        );
+        recordsByPartition.put(
                 new TopicPartition(topics.get(1), 0),
-
                 Arrays.asList(
-                        new ConsumerRecord<>(topics.get(1), 0, 1L, "key2", "value2")
+                        new ConsumerRecord<>(topics.get(1), 0, 70L, "key1", "value1")
                 )
         );
+    }
+
+
+    @Before
+    public void setup() {
+
+        // mock consumer
+        consumer = mock(Consumer.class);
+
+        // create priority consumer spy
+        spyPriorityConsumer   = spy(new PriorityConsumer<>(consumer, topics));
+    }
+
+
+    /**
+     * Check if correct result is returned
+     */
+    @Test
+    public void testPoll() {
+
+        final String topic = topics.get(0);
+
+        final ConsumerRecords<String, String> records = new ConsumerRecords<>(recordsByPartition);
+
+        doReturn(recordsByPartition.keySet()).when(spyPriorityConsumer).assignment();
+        doReturn(topic).when(spyPriorityConsumer).findTopicToRead();
+        doReturn(records).when(spyPriorityConsumer).pollFromTopic(topic);
+
+        assertEquals(
+
+                records,
+
+                spyPriorityConsumer.poll(0L)
+        );
+
+        // Check if PriorityTopic::pollFromTopic is called
+        verify(spyPriorityConsumer).pollFromTopic(topic);
+    }
+
+
+    /**
+     * Check forcePartitionsAssignment is called if no partitions is assigned
+     */
+    @Test
+    public void testPollWorksAsExpectedIfNoPartitionsIsAssigned() {
+
+        doReturn(new HashSet<TopicPartition>()).when(spyPriorityConsumer).assignment();
+        doNothing().when(spyPriorityConsumer).forcePartitionsAssignment();
+
+        spyPriorityConsumer.poll(0L);
+
+        // Check that PriorityConsumer::forcePartitionsAssignment is called
+        verify(spyPriorityConsumer).forcePartitionsAssignment();
+    }
+
+
+    /**
+     * Check empty result is returned if there is no available topic to read
+     */
+    @Test
+    public void testPollWorksAsExpectedIfNoTopicsToRead() {
+
+        doReturn(recordsByPartition.keySet()).when(spyPriorityConsumer).assignment();
+        doReturn(null).when(spyPriorityConsumer).findTopicToRead();
+
+        assertEquals(
+
+                ConsumerRecords.empty(),
+
+                spyPriorityConsumer.poll(0L)
+        );
+
+        verify(spyPriorityConsumer).idlePoll();
+    }
+
+
+    /**
+     * Test that forcePartitionsAssignment works as expected
+     */
+    @Test
+    public void testForcePartitionsAssignment() {
+
+        // mock PriorityConsumer::seek method
+        doNothing().when(spyPriorityConsumer).seek(any(TopicPartition.class), any(Long.class));
+
+        // Check it works correctly when empty result is returned from poll
+        {
+
+            doReturn(ConsumerRecords.empty()).when(spyPriorityConsumer).doPollFromConsumer(any(Long.class));
+
+            spyPriorityConsumer.forcePartitionsAssignment();
+
+            verify(spyPriorityConsumer, never()).seek(any(TopicPartition.class), any(Long.class));
+        }
+
+
+        // Check it works correctly when not empty result is returned from poll
+        {
+
+            // mock Consumer::poll method to return appropriate data
+            doReturn(new ConsumerRecords<>(recordsByPartition)).when(spyPriorityConsumer).doPollFromConsumer(any(Long.class));
+
+            spyPriorityConsumer.forcePartitionsAssignment();
+
+            // Check that seek was called for all partitions with appropriate params
+            for (TopicPartition partition : recordsByPartition.keySet()) {
+
+                verify(spyPriorityConsumer).seek(
+                        partition,
+                        recordsByPartition.get(partition).get(0).offset()
+                );
+            }
+
+            // Check that seek was called only 'number of partitions' times
+            verify(spyPriorityConsumer, times(recordsByPartition.values().size()))
+                    .seek(any(TopicPartition.class), any(Long.class));
+        }
     }
 
 
     @Test
-    public void testPollWorksAsExpected() {
+    public void testAssignment() {
 
-        for (String topic : topics) {
+        Set<TopicPartition> partitions = recordsByPartition.keySet();
 
-            Consumer<String, String> consumer = mockConsumerToReadFromTopic(topic);
+        // mock Consumer::assignment method to return partitions set
+        doReturn(partitions).when(consumer).assignment();
 
-            priorityConsumer = new PriorityConsumer<>(consumer, topics);
+        assertEquals(partitions, spyPriorityConsumer.assignment());
 
-            // Check that result is the same as expected
-            assertEquals(
-
-                    "Result should be received from the topic '" + topic + "'",
-
-                    getConsumerRecordsForTopic(topic),
-
-                    priorityConsumer.poll(0)
-            );
-
-            // Check that consumer was subscribed to all necessary topics
-            verify(consumer).subscribe(ArgumentMatchers.eq(topics));
-
-            // Check that all partitions except partitions of the given topic was paused
-            verify(consumer).pause(
-                    getPartitionsSetExceptTopic(topic)
-            );
-        }
-
+        // check if Consumer::assignment method was called
+        verify(consumer).assignment();
     }
 
 
-    private Consumer<String, String> mockConsumerToReadFromTopic(String topic) {
+    @Test
+    public void testPollFromTopic() {
 
-        Set<TopicPartition> partitionsSet = consumerRecordsByPartition.keySet();
+        final String topic = topics.get(0);
 
-        Consumer<String, String> consumer = mock(Consumer.class);
+        final ConsumerRecords<String, String> records = new ConsumerRecords<>(recordsByPartition);
 
-        when(consumer.assignment()).thenReturn(partitionsSet);
+        doNothing().when(spyPriorityConsumer).pauseTopicsExcept(topic);
+        doNothing().when(spyPriorityConsumer).resumeAllTopics();
+        doReturn(records).when(spyPriorityConsumer).doPollFromConsumer(anyLong());
 
-        when(consumer.endOffsets(partitionsSet)).thenReturn(getEndOffsets());
+        assertEquals(records, spyPriorityConsumer.pollFromTopic(topic));
 
-        // Mock consumer.position()
-        {
-            Map<TopicPartition, Long> currentOffsets = getCurrentOffsetsToReadFrom(topic);
-
-            for (TopicPartition partition : currentOffsets.keySet()) {
-                when(consumer.position(partition)).thenReturn(currentOffsets.get(partition));
-            }
-        }
-
-        when(consumer.poll(0L)).thenReturn(getConsumerRecordsForTopic(topic));
-
-        return consumer;
-
+        verify(spyPriorityConsumer).pauseTopicsExcept(topic);
+        verify(spyPriorityConsumer).resumeAllTopics();
+        verify(spyPriorityConsumer).doPollFromConsumer(anyLong());
     }
 
 
-    private Map<TopicPartition, Long> getCurrentOffsetsToReadFrom(String topicToRead) {
+    @Test
+    public void testPauseAllTopics() {
 
-        Map<TopicPartition, Long> currentOffsets = new HashMap<>();
+        Set<TopicPartition> partitions = recordsByPartition.keySet();
 
-        int topicToReadIndex = topics.indexOf(topicToRead);
+        doNothing().when(spyPriorityConsumer).pause(partitions);
+        doReturn(partitions).when(spyPriorityConsumer).assignment();
 
-        for (int i = 0; i < topicToReadIndex; i++) {
+        spyPriorityConsumer.pauseAllTopics();
 
-            for (TopicPartition partition : getPartitionsForTopic(topics.get(i))) {
-
-                List<ConsumerRecord<String, String>> records = consumerRecordsByPartition.get(partition);
-
-                currentOffsets.put(
-
-                        partition,
-
-                        i < topicToReadIndex
-                                ? records.get(records.size() - 1).offset() + 1
-                                : 0
-                );
-            }
-
-        }
-
-        return currentOffsets;
+        verify(spyPriorityConsumer).pause(partitions);
     }
 
 
-    private Map<TopicPartition, Long> getEndOffsets() {
+    @Test
+    public void testDoPollFromConsumer() {
 
-        Map<TopicPartition, Long> endOffsets = new HashMap<>();
+        long timeout = 20;
 
-        for(TopicPartition partition : consumerRecordsByPartition.keySet()) {
-            List<ConsumerRecord<String, String>> records = consumerRecordsByPartition.get(partition);
-            endOffsets.put(partition, records.get(records.size() - 1).offset() + 1);
-        }
+        final ConsumerRecords<String, String> records = new ConsumerRecords<>(recordsByPartition);
 
-        return endOffsets;
+        doReturn(records).when(consumer).poll(timeout);
+
+        assertEquals(
+
+                records,
+
+                spyPriorityConsumer.doPollFromConsumer(timeout)
+        );
+
+        verify(consumer).poll(timeout);
     }
-
-
-    private ConsumerRecords<String, String> getConsumerRecordsForTopic(String topic) {
-
-        if (consumerRecordsByTopics.containsKey(topic)) {
-            return consumerRecordsByTopics.get(topic);
-        }
-
-        Map<TopicPartition, List<ConsumerRecord<String, String>>> records = new HashMap<>();
-
-        for(TopicPartition partition : consumerRecordsByPartition.keySet()) {
-
-            if (!partition.topic().equals(topic)) {
-                continue;
-            }
-
-            if (!records.containsKey(partition)) {
-                records.put(partition, new ArrayList<>());
-            }
-
-            records.get(partition).addAll(consumerRecordsByPartition.get(partition));
-        }
-
-        ConsumerRecords<String, String> result = new ConsumerRecords<>(records);
-        consumerRecordsByTopics.put(topic, result);
-
-        return result;
-    }
-
-
-    private Set<TopicPartition> getPartitionsForTopic(String topic) {
-
-        return consumerRecordsByPartition.keySet().stream()
-                .filter(topicPartition -> topicPartition.topic().equals(topic))
-                .collect(Collectors.toSet());
-    }
-
-
-    private Set<TopicPartition> getPartitionsSetExceptTopic(String topic) {
-
-        return consumerRecordsByPartition.keySet().stream()
-                .filter(topicPartition -> !topicPartition.topic().equals(topic))
-                .collect(Collectors.toSet());
-    }
-
 }
