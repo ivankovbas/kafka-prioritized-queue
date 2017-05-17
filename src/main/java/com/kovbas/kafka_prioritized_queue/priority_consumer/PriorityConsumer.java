@@ -57,18 +57,15 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
             if (topic != null) {
 
                 // poll data from specific topic and handle messages
-                pauseTopicsExcept(topic);
-                resultRecords = super.poll(0L);
+                resultRecords = pollFromTopic(topic);
 
             } else {
 
                 // If there isn't topic with unpolled messages then pause
                 // all topics and call poll to not cause session timeout
-                pauseAllTopics();
-                super.poll(1000L); // TODO: allow to set this value from outside
+                idlePoll();
             }
 
-            resumeAllTopics();
 
             if (!resultRecords.isEmpty()) {
                 return resultRecords;
@@ -80,6 +77,36 @@ public class PriorityConsumer<K, V> extends AbstractConsumerDecorator<K, V> {
         } while (remaining > 0);
 
         return resultRecords;
+    }
+
+
+    /**
+     * Polls data from the given topic
+     * To poll data only from the given topic all partitions except partitions of the topic
+     * will be paused. After making poll all partitions will be resumed.
+     *
+     * @param topic The name of topic to poll data from
+     * @return New messages from the given topic
+     */
+    protected ConsumerRecords<K, V> pollFromTopic(String topic) {
+
+        pauseTopicsExcept(topic);
+        ConsumerRecords<K, V> resultRecords = super.poll(0L);
+        resumeAllTopics();
+
+        return resultRecords;
+    }
+
+
+    /**
+     * Method pauses all partitions and calls poll to retain connection live,
+     * after that all partitions will be resumed
+     */
+    protected void idlePoll() {
+
+        pauseAllTopics();
+        super.poll(1000L); // TODO: allow to set this value from outside
+        resumeAllTopics();
     }
 
 
